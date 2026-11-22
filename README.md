@@ -1,17 +1,62 @@
 # URL Shortener — INF326 Tarea 2
 
-Este repositorio contiene las implementaciones de las dos arquitecturas de la tarea.
+Este repositorio contiene las implementaciones de las dos arquitecturas solicitadas para el acortador de URLs, utilizando **LiteStar** como framework HTTP base y **gRPC** para la analítica desacoplada.
 
 ## Integrantes
 
 - Marco Repetto (202103059-K)
+- Benjamín López (202273081-1)
 
-## Arquitectura 1
+---
 
-El acortador expone una API HTTP con LiteStar y guarda las URL en SQLite. En cada
-redirección envía un evento de acceso a un servicio independiente mediante gRPC;
-ese servicio almacena los eventos en otra base SQLite. Responde con HTTP 302 y
-`Cache-Control: no-store, no-cache, must-revalidate`.
+## 1. Arquitectura 1: Analítica Desacoplada (HTTP 302 + gRPC Log Service)
+
+El acortador expone una API HTTPS con LiteStar y persiste la terna `<id, hash, long_url>` en SQLite. Ante cada petición de redirección:
+- Emite un evento `"url hit"` (`timestamp` UTC y `url`) mediante una llamada gRPC al microservicio independiente `Log Service`.
+- El servicio gRPC persiste el evento en una base SQLite dedicada (`databases/log.db`).
+- Responde al cliente con código **HTTP 302 Found** y cabeceras `Cache-Control: no-store, no-cache, must-revalidate` para forzar al navegador a consultar siempre el acortador y no memorizar la redirección.
+
+### Requisitos e Inicio (Arquitectura 1)
+
+Los siguientes comandos se ejecutan desde el directorio de la Arquitectura 1 (`ARQ 01`):
+
+1. **Preparar entorno virtual e instalar dependencias:**
+   ```bash
+   python -m venv venv
+   # En Windows PowerShell:
+   .\venv\Scripts\Activate.ps1
+   # En Linux / macOS:
+   source venv/bin/activate
+
+litestar[standard]>=2.0.0
+pybase62>=0.5.0
+grpcio>=1.50.0
+cryptography>=41.0.0
+
+Generar certificados SSL autofirmados (si no existen en certs/):
+BASH
+
+python -c "from cryptography import x509; from cryptography.x509.oid import NameOID; from cryptography.hazmat.primitives import hashes, serialization; from cryptography.hazmat.primitives.asymmetric import rsa; import datetime; key = rsa.generate_private_key(65537, 2048); name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'localhost')]); cert = x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key()).serial_number(1000).not_valid_before(datetime.datetime.utcnow()).not_valid_after(datetime.datetime.utcnow() + datetime.timedelta(days=365)).sign(key, hashes.SHA256()); open('certs/key.pem', 'wb').write(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.TraditionalOpenSSL, serialization.NoEncryption())); open('certs/cert.pem', 'wb').write(cert.public_bytes(serialization.Encoding.PEM))"
+
+2. **Ejecutar los servicios (en terminales separadas con el entorno activo):**
+
+Terminal 1 — Servidor de Logs (gRPC en puerto 50051):
+
+python grpc_server.py
+
+Terminal 2 — API LiteStar Shortener (HTTPS en puerto 8000):
+
+python app.py
+
+3. **Prueba rapida arquitectura 1**
+
+# 1. Acortar URL original (ID base 597652313 genera hash eRgfR)
+curl -k -X POST https://localhost:8000/shorten \
+  -H "Content-Type: application/json" \
+  -d '{"url": "[https://usm.cl/informatica/postulaciones-a-postgrado/2025/magister-en-ingenieria-informatica/](https://usm.cl/informatica/postulaciones-a-postgrado/2025/magister-en-ingenieria-informatica/)"}'
+
+# 2. Redirección y emisión de evento gRPC (conservando método GET)
+curl -k -sS -D - -o /dev/null https://localhost:8000/eRgfR
 
 ### Tradeoffs para el acortador de URL
 
@@ -110,3 +155,32 @@ exacto de clics incluso ante fallas del registrador, la Arquitectura 1
 necesitaría mecanismos adicionales, como reintentos o una cola persistente. En
 esta tarea, el registro de accesos permite comparar las decisiones
 arquitectónicas sin exigir esa garantía adicional.
+
+4. **BONUS: Generación de Identificadores Únicos en Ambiente Distribuido**
+En un sistema centralizado, la combinación de AUTOINCREMENT de SQLite y Base62 asegura unicidad secuencial sin colisiones. Sin embargo, al escalar horizontalmente a múltiples réplicas del acortador (múltiples nodos en paralelo), el autoincremento tradicional colisiona o se convierte en un cuello de botella de contención.
+
+Para garantizar IDs únicos en un ambiente distribuido sin degradar la concurrencia, se pueden adoptar tres estrategias reconocidas:
+
+# 1. Twitter Snowflake / ULID (Recomendada por rendimiento):
+
+Se genera un entero de 64 bits compuesto de:
+
+- 41 bits: Marca de tiempo (milisegundos transcurridos).
+
+- 10 bits: Identificador de la máquina/nodo trabajador (worker_id).
+
+- 12 bits: Secuencia incremental local por milisegundo.
+
+Ventaja: Genera enteros que se codifican directamente a Base62 sin requerir llamadas de red ni sincronización entre nodos, garantizando unicidad absoluta y orden cronológico.
+
+# 2. Asignación de Rangos por Bloques (Range Allocation vía Redis / Etcd / ZooKeeper):
+
+- Un coordinador central entrega a cada réplica un bloque de identificadores (ejemplo: Nodo 1 reserva del 1,000,000 al 1,999,999; Nodo 2 reserva del 2,000,000 al 2,999,999).
+
+- Cada nodo incrementa en memoria sus IDs de forma ultrarrápida. Solo contacta al coordinador central cuando agota su rango para solicitar uno nuevo.
+
+# 3. Hashing Criptográfico Truncado con Salt/Nonce:
+
+Se calcula un hash criptográfico de la URL junto a un timestamp (SHA-256(long_url + timestamp + worker_id)), tomando los primeros 40–50 bits para codificarlos en Base62.
+
+Trade-off: Requiere un mecanismo de base de datos distribuida con reintentos para detectar y resolver eventuales colisiones criptográficas.
