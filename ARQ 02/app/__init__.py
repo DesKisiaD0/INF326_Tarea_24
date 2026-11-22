@@ -1,0 +1,1 @@
+"""Shortener v2."""
