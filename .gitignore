@@ -1,0 +1,19 @@
+﻿# Entorno virtual
+venv/
+.venv/
+env/
+
+# Caché de Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Bases de datos locales
+databases/*.db
+*.sqlite3
+
+# Certificados locales (opcional si prefieren generarlos localmente según el README)
+certs/*.pem
+
+# VS Code
+.vscode/
