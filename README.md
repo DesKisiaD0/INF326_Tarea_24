@@ -6,6 +6,7 @@ Este repositorio contiene las implementaciones de las dos arquitecturas solicita
 
 - Marco Repetto (202103059-K)
 - Benjamín López (202273081-1)
+- Rock Simón Dabre Valenzuela (202173077-k)
 
 ---
 
